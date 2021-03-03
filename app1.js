@@ -9,6 +9,7 @@ const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const findOrCreate = require('mongoose-findorcreate');
+const HttpsProxyAgent = require('https-proxy-agent');
 
 
 // const md5 = require("md5");
@@ -63,22 +64,27 @@ passport.deserializeUser(function(id, done) {
   });
 });
 
-passport.use(new GoogleStrategy({
-    clientID: process.env.CLIENT_ID,
-    clientSecret: process.env.CLIENT_SECRET,
-    proxy: true,
-    callbackURL: "http://localhost:3000/auth/google/secrets",
-    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
-  },
-  function(accessToken, refreshToken, profile, cb) {
-    console.log(profile);
+//as we are using proxy server, so we need to do some modification
 
-    User.findOrCreate({ googleId: profile.id }, function (err, user) {
-      return cb(err, user);
-    });
-  }
-));
+const gStrategy = new GoogleStrategy({
+clientID: process.env.CLIENT_ID,
+clientSecret: process.env.CLIENT_SECRET,
+callbackURL: "http://localhost:3000/auth/google/secrets",
+userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+},
+function(accessToken, refreshToken, profile, cb) {
+console.log(profile);
+User.findOrCreate({ googleId: profile.id }, function (err, user) {
+return cb(err, user);
+});
+}
+);
 
+const agent = new HttpsProxyAgent(process.env.HTTP_PROXY || "http://127.0.0.1:4780");
+gStrategy._oauth2.setAgent(agent);
+
+passport.use(gStrategy);
+///The following is about the webpage
 app.route('/')
   .get(function(req, res) {
     res.render("home");
@@ -116,11 +122,15 @@ app.route('/login')
 
 app.route('/secrets')
 .get(function (req, res) {
-  if (req.isAuthenticated()) {
-    res.render("secrets");
-  } else {
-    res.render("/login");
-  }
+  User.find({"secret": {$ne: null}}, function(err, foundUsers) {
+    if (err) {
+      console.log(err);
+    } else {
+      if (foundUsers) {
+        res.render("secrets", {usersWithSecrets: foundUsers});
+      }
+    }
+  });
 });
 
 app.route('/register')
@@ -140,6 +150,34 @@ app.route('/register')
       }
     });
   });
+
+app.route("/submit")
+.get(function(req, res) {
+  if (req.isAuthenticated()) {
+    res.render("submit");
+  } else {
+    res.render("/login");
+  }
+})
+.post(function(req, res) {
+  const submittedSecret = req.body.secret;
+//passport saved the user detials
+  User.findById(req.user.id, function(err, foundUser) {
+    if (err) {
+      console.log(err);
+    } else {
+      if (foundUser) {
+        foundUser.secret = submittedSecret;
+        foundUser.save(function () {
+          res.redirect("/secrets");
+        });
+      }
+    }
+  });
+});
+
+
+
 
 app.get("/logout", function(req, res) {
   req.logout();
